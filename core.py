@@ -124,7 +124,7 @@ class DataBuilderAnnotated(data.Dataset):
         return t
 
     def __init__(self):
-        self.loader_segmentation = torch.utils.data.DataLoader(dataset=self, batch_size=32, shuffle=False)
+        self.loader_segmentation = torch.utils.data.DataLoader(dataset=self, batch_size=64, shuffle=False)
         self.t = self.segmentation_transform(mean=[0.7446,0.7655,0.7067], std=[0.27776,0.24386,0.33867])
 
     def loader(self):
@@ -150,7 +150,7 @@ class DataBuilderSegmentation(data.Dataset):
         return t
 
     def __init__(self):
-        self.loader_segmentation = torch.utils.data.DataLoader(dataset=self, batch_size=32, shuffle=False)
+        self.loader_segmentation = torch.utils.data.DataLoader(dataset=self, batch_size=64, shuffle=False)
         self.t = self.segmentation_transform(mean=[0.0,0.0,0.0], std=[1,1,1])
 
     def loader(self):
@@ -190,7 +190,7 @@ for i, datum in enumerate(dataloader_annotated.loader()):
 '''
 
 ################# Segmentation
-
+'''
 for bidx, datum in enumerate(dataloader_segmentation.loader()):
     for i in range(datum["Image"].size()[0]):
 
@@ -241,18 +241,19 @@ for bidx, datum in enumerate(dataloader_segmentation.loader()):
         cv2.rectangle(img, (box['xa']+3, box['yb']-3), (box['xb']-3, box['ya']+2*box['h']//3+3), (0, 255, 0), 2)
         cv2.rectangle(img, (box['xa']+3, box['yb']-2*box['h']//3-3), (box['xb']-3, box['ya']+3), (0, 0, 255), 2)
 
-        cv2.imshow("dst.png", img)
+        cv2.imshow("dst{}.png".format(i), img)
+        cv2.imwrite("dst{}.png".format(i), img)
         cv2.waitKey()
+        cv2.destroyAllWindows()
 
         ## Save it
-    break
+'''
 # Return bounding boxes on any leaf image given as input
 # Sample the first image through the segmentation builder
 # segment it into parts
 # create the tensors associated with the bounding boxes, using a specific function
 # classify parts independently
 
-exit()
 ################# Naive classification
 
 mymodel = resnet18(True)
@@ -270,41 +271,56 @@ for bidx, datum in enumerate(dataloader_annotated.loader()):
         for tag in range(6):
             best_preds[tag][target[tag][i].cpu().numpy()[0]] += 1
     samples += bs
-
+#print(best_preds)
 for i in range(len(leaf_targets.keys())):
     max = 0
     for j in range(len(best_preds[i])):
-        if best_preds[i][j]/samples > max:
+        #print( best_preds[i][j]*1.0/samples)
+        if best_preds[i][j]*1.0/samples > max:
             max = best_preds[i][j]/samples
-    print(best_preds[i][0]/samples)
+    #print(max)
 
-for epoch in range(10):
-    for bidx, datum in enumerate(dataloader_annotated.loader()):
-        image = datum["Image"]
-        output = mymodel(Variable(image).cuda())
-        L_class = 0
-        # build targets based on datum info
-        target = datum["Info"]
+final_epoch = 10
+folds = 7
 
-        correct = []
-        for i in range(6):
-            correct.append(0)
-            L_class += criterion(output[i],Variable(target[i].squeeze()).cuda())
-            for k in range(image.size()[0]):
-                if target[i][k][0] == np.argmax(output[i].data.cpu().numpy(), axis=1)[k]:
-                    correct[i] += 1
+fold_acc = [0 for i in range(6)]
+for k_fold_batch in range(folds):
 
-        for i in range(6):
-            mykeys = list(leaf_targets.keys())
-            print('Accuracy for category {}'.format(mykeys[i]),correct[i]/image.size()[0])
-        optimizer.zero_grad()
-        L_class.backward()
-        optimizer.step()
+    mymodel = resnet18(True)
+    mymodel.reform()
+    mymodel.cuda()
+    optimizer = optim.Adam(mymodel.parameters(), weight_decay=0.0, lr=1e-4)
+    criterion = torch.nn.CrossEntropyLoss()
+    print("Kfold for k = {}".format(k_fold_batch))
+    for epoch in range(final_epoch):
+        for bidx, datum in enumerate(dataloader_annotated.loader()):
 
-        if epoch != 9 and bidx > 14:
-            break
 
-        print(bidx)
+            image = datum["Image"]
+            output = mymodel(Variable(image).cuda())
+            L_class = 0
+            # build targets based on datum info
+            target = datum["Info"]
+
+            correct = []
+            for i in range(6):
+                correct.append(0)
+                L_class += criterion(output[i],Variable(target[i].squeeze()).cuda())
+                for k in range(image.size()[0]):
+                    if target[i][k][0] == np.argmax(output[i].data.cpu().numpy(), axis=1)[k]:
+                        correct[i] += 1
+            if bidx != k_fold_batch:
+                optimizer.zero_grad()
+                L_class.backward()
+                optimizer.step()
+            elif epoch == final_epoch - 1:
+                for i in range(6):
+                    fold_acc[i] += correct[i]/(image.size()[0])
+    if k_fold_batch == 0:
+        print("Saving")
+        torch.save(mymodel.state_dict(),"./model_leaves_baseline.pth")
+print([fold_acc[i]/folds for i in range(6)])
+
 
 
     #print(L_class.data.cpu().numpy())
